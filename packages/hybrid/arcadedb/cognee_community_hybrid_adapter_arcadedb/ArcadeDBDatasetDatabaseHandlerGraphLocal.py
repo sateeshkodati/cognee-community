@@ -23,6 +23,7 @@ class ArcadeDBDatasetDatabaseHandlerGraphLocal(DatasetDatabaseHandlerInterface):
             "graph_database_url": graph_config.graph_database_url,
             "graph_database_provider": graph_config.graph_database_provider,
             "graph_database_key": graph_config.graph_database_key,
+            "graph_database_port": graph_config.graph_database_port,
             "graph_dataset_database_handler": "arcadedb_graph_local",
             "graph_database_connection_info": {
                 "graph_database_username": graph_config.graph_database_username,
