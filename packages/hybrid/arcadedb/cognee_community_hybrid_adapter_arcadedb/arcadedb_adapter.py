@@ -93,7 +93,9 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
         if http_port is None:
             configured_port = graph_database_port or kwargs.get("graph_database_port")
             try:
-                configured_port = int(configured_port) if configured_port not in (None, "") else None
+                configured_port = (
+                    int(configured_port) if configured_port not in (None, "") else None
+                )
             except (TypeError, ValueError):
                 configured_port = None
             http_port = 2480 if configured_port in (None, 7687) else configured_port
