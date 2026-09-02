@@ -2,7 +2,8 @@
 Example: Using ArcadeDB as a hybrid (graph + vector) backend for Cognee.
 
 Prerequisites:
-  - ArcadeDB running on localhost:2480
+  - ArcadeDB 26.8.1 running on localhost:2480
+  - pip install "cognee>=1.5.0,<1.6.0"
   - pip install cognee-community-hybrid-adapter-arcadedb
 """
 

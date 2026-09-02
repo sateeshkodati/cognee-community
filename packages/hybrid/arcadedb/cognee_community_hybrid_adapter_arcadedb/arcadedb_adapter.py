@@ -60,6 +60,9 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
     Vector operations always use the HTTP API for SQL queries.
     """
 
+    # Cognee 1.5.x CYPHER / NATURAL_LANGUAGE retrievers inspect this flag.
+    supports_cypher_queries: bool = True
+
     def __init__(
         self,
         graph_database_url: str,
@@ -70,18 +73,30 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
         url: str | None = None,
         api_key: str | None = None,
         database_name: str | None = "cognee",
+        graph_database_port: int | str | None = None,
+        graph_database_key: str | None = None,
         **kwargs,
     ):
         raw_url = url if url else graph_database_url
         self.graph_database_username = graph_database_username
         self.graph_database_password = graph_database_password
         self.database_name = database_name or "cognee"
+        self.api_key = api_key or graph_database_key
 
         # Derive host from URL
         host = raw_url.split("://")[-1].split(":")[0].split("/")[0]
 
-        # HTTP base URL (always needed for SQL/vector operations)
-        http_port = kwargs.get("http_port", 2480)
+        # HTTP is ArcadeDB's primary API. Cognee's factory passes
+        # graph_database_port; README examples set that to 2480. The Neo4j-style
+        # default 7687 is Bolt-only and must not be used as the HTTP port.
+        http_port = kwargs.get("http_port")
+        if http_port is None:
+            configured_port = graph_database_port or kwargs.get("graph_database_port")
+            try:
+                configured_port = int(configured_port) if configured_port not in (None, "") else None
+            except (TypeError, ValueError):
+                configured_port = None
+            http_port = 2480 if configured_port in (None, 7687) else configured_port
         self.http_base_url = f"http://{host}:{http_port}"
 
         # Try to set up Bolt driver for graph operations
@@ -166,7 +181,7 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
         except Exception:
             pass
 
-        # Default for modern ArcadeDB (26.4+)
+        # Default for modern ArcadeDB (26.4+, including 26.8.1)
         self._vector_storage_type_cache = "Vertex"
         return "Vertex"
 
@@ -443,40 +458,56 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
         )
         return results[0]["node_exists"] if results else False
 
-    async def add_node(self, node: DataPoint):
-        serialized = self.serialize_properties(node.model_dump())
-        node_id = str(node.id)
-        result = await self._upsert_cypher_node(node_id, serialized)
+    async def add_node(
+        self,
+        node: DataPoint | str,
+        properties: dict[str, Any] | None = None,
+    ) -> None:
+        """Add a node from a DataPoint or from a string id + property dict.
 
-        await self._store_vertex_vectors(
-            node_id=node_id,
-            node_type=str(serialized.get("type") or type(node).__name__),
-            embeddable_properties={
-                prop_name: getattr(node, prop_name, None)
-                for prop_name in DataPoint.get_embeddable_property_names(node)
-            },
-        )
+        Cognee 1.5.x GraphDBInterface uses both call styles.
+        """
+        if isinstance(node, DataPoint):
+            serialized = self.serialize_properties(node.model_dump())
+            node_id = str(node.id)
+            await self._upsert_cypher_node(node_id, serialized)
+            await self._store_vertex_vectors(
+                node_id=node_id,
+                node_type=str(serialized.get("type") or type(node).__name__),
+                embeddable_properties={
+                    prop_name: getattr(node, prop_name, None)
+                    for prop_name in DataPoint.get_embeddable_property_names(node)
+                },
+            )
+            return
 
-        return result
+        if properties is None:
+            raise ValueError("properties is required when node is a string id")
+
+        serialized = self.serialize_properties(properties)
+        serialized.setdefault("id", str(node))
+        await self._upsert_cypher_node(str(node), serialized)
 
     async def add_nodes(
         self,
-        nodes: list[DataPoint],
+        nodes: list[DataPoint] | list[tuple[str, dict[str, Any]]],
         source_ref_key: str | None = None,
         pipeline_run_id: str | None = None,
     ) -> None:
         if not nodes:
-            return []
+            return
 
         # ArcadeDB's HTTP Cypher parser rejects the batch form
         # `SET n += node.properties` used with `UNWIND $nodes AS node`.
         # Keep the write path compatible with both Bolt and HTTP fallback by
         # reusing the proven single-node upsert query.
-        results = []
+        # source_ref_key / pipeline_run_id are accepted for the 1.5 write
+        # contract; ArcadeDB does not stamp graph-provenance columns yet.
         for node in nodes:
-            results.append(await self.add_node(node))
-
-        return results
+            if isinstance(node, tuple) and len(node) == 2:
+                await self.add_node(str(node[0]), node[1])
+            else:
+                await self.add_node(node)
 
     async def extract_node(self, node_id: str):
         results = await self.extract_nodes([node_id])
@@ -495,21 +526,42 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
         )
 
     async def delete_nodes(self, node_ids: list[str]) -> None:
-        return await self._cypher(
+        await self._cypher(
             "UNWIND $node_ids AS id MATCH (node {id: id}) DETACH DELETE node",
             {"node_ids": node_ids},
         )
 
-    async def has_edge(self, from_node: UUID, to_node: UUID, edge_label: str) -> bool:
+    async def remove_belongs_to_set_tags(
+        self,
+        tags: list[str],
+        node_ids: list[str] | None = None,
+    ) -> None:
+        if not tags:
+            return
+
+        params: dict[str, Any] = {"tags": tags}
+        node_filter = ""
+        if node_ids is not None:
+            params["node_ids"] = [str(node_id) for node_id in node_ids]
+            node_filter = " AND n.id IN $node_ids"
+
+        await self._cypher(
+            "MATCH (n) WHERE n.belongs_to_set IS NOT NULL"
+            f"{node_filter} "
+            "SET n.belongs_to_set = [tag IN n.belongs_to_set WHERE NOT tag IN $tags]",
+            params,
+        )
+
+    async def has_edge(self, source_id: str, target_id: str, relationship_name: str) -> bool:
         records = await self._cypher(
             "MATCH (from_node)-[relationship]->(to_node) "
-            "WHERE from_node.id = $from_node_id AND to_node.id = $to_node_id "
-            "AND type(relationship) = $edge_label "
+            "WHERE from_node.id = $source_id AND to_node.id = $target_id "
+            "AND type(relationship) = $relationship_name "
             "RETURN COUNT(relationship) > 0 AS edge_exists",
             {
-                "from_node_id": str(from_node),
-                "to_node_id": str(to_node),
-                "edge_label": edge_label,
+                "source_id": str(source_id),
+                "target_id": str(target_id),
+                "relationship_name": relationship_name,
             },
         )
         return records[0]["edge_exists"] if records else False
@@ -540,29 +592,30 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
                 r["from_node"],
                 r["to_node"],
                 r["relationship_name"],
+                {},
             )
             for r in results
         ]
 
     async def add_edge(
         self,
-        from_node: UUID,
-        to_node: UUID,
+        source_id: str,
+        target_id: str,
         relationship_name: str,
-        edge_properties: dict[str, Any] | None = None,
-    ):
-        serialized = self.serialize_properties(edge_properties or {})
-        return await self._cypher(
+        properties: dict[str, Any] | None = None,
+    ) -> None:
+        serialized = self.serialize_properties(properties or {})
+        await self._cypher(
             dedent(f"""\
-                MATCH (from_node {{id: $from_node}}),
-                      (to_node {{id: $to_node}})
+                MATCH (from_node {{id: $source_id}}),
+                      (to_node {{id: $target_id}})
                 MERGE (from_node)-[r:{relationship_name}]->(to_node)
                 ON CREATE SET r += $properties, r.updated_at = $now
                 ON MATCH SET r += $properties, r.updated_at = $now
                 RETURN r"""),
             {
-                "from_node": str(from_node),
-                "to_node": str(to_node),
+                "source_id": str(source_id),
+                "target_id": str(target_id),
                 "properties": serialized,
                 "now": self._now(),
             },
@@ -570,33 +623,42 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
 
     async def add_edges(
         self,
-        edges: list[tuple[str, str, str, dict[str, Any]]],
+        edges: list[tuple[str, str, str, dict[str, Any] | None]],
         source_ref_key: str | None = None,
         pipeline_run_id: str | None = None,
     ) -> None:
         if not edges:
-            return []
+            return
 
-        results = []
         for src, dst, rel_type, properties in edges:
             edge_properties = {
                 **(properties or {}),
                 "source_node_id": str(src),
                 "target_node_id": str(dst),
             }
-            results.append(await self.add_edge(src, dst, rel_type, edge_properties))
-
-        return results
+            await self.add_edge(src, dst, rel_type, edge_properties)
 
     async def get_edges(self, node_id: str):
-        results = await self._cypher(
+        results = await self._cypher_projection(
             "MATCH (n {id: $node_id})-[r]-(m) "
-            "RETURN n.id AS source_id, m.id AS target_id, type(r) AS rel_type",
+            "RETURN n.id AS source_id, m.id AS target_id, type(r) AS rel_type, "
+            "properties(r) AS properties",
             {"node_id": node_id},
         )
-        return [
-            (r["source_id"], r["target_id"], {"relationship_name": r["rel_type"]}) for r in results
-        ]
+        edges = []
+        for record in results:
+            props = record.get("properties") or {}
+            if not isinstance(props, dict):
+                props = dict(props)
+            edges.append(
+                (
+                    record["source_id"],
+                    record["target_id"],
+                    record["rel_type"],
+                    props,
+                )
+            )
+        return edges
 
     async def get_disconnected_nodes(self) -> list[str]:
         results = await self._cypher("MATCH (n) WHERE NOT (n)--() RETURN collect(n.id) AS ids")
@@ -633,10 +695,17 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
         return results
 
     async def get_neighbors(self, node_id: str) -> list[dict[str, Any]]:
-        predecessors, successors = await asyncio.gather(
-            self.get_predecessors(node_id), self.get_successors(node_id)
+        results = await self._cypher_projection(
+            "MATCH (node)-[]-(neighbor) "
+            "WHERE node.id = $node_id "
+            "RETURN DISTINCT properties(neighbor) AS properties",
+            {"node_id": node_id},
         )
-        return predecessors + successors
+        neighbors = []
+        for record in results:
+            props = record.get("properties") or {}
+            neighbors.append(props if isinstance(props, dict) else dict(props))
+        return neighbors
 
     async def get_node(self, node_id: str) -> dict[str, Any] | None:
         results = await self._cypher(
@@ -651,27 +720,45 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
             {"node_ids": node_ids},
         )
 
-    async def get_connections(self, node_id: UUID) -> list:
+    async def get_connections(self, node_id: UUID | str) -> list:
         predecessors, successors = await asyncio.gather(
-            self._cypher(
+            self._cypher_projection(
                 "MATCH (node)<-[r]-(neighbour) "
                 "WHERE node.id = $node_id "
-                "RETURN neighbour.id AS src, type(r) AS rel, node.id AS dst",
+                "RETURN properties(neighbour) AS neighbour, type(r) AS rel, "
+                "properties(node) AS node",
                 {"node_id": str(node_id)},
             ),
-            self._cypher(
+            self._cypher_projection(
                 "MATCH (node)-[r]->(neighbour) "
                 "WHERE node.id = $node_id "
-                "RETURN node.id AS src, type(r) AS rel, neighbour.id AS dst",
+                "RETURN properties(node) AS node, type(r) AS rel, "
+                "properties(neighbour) AS neighbour",
                 {"node_id": str(node_id)},
             ),
         )
 
         connections = []
-        for r in predecessors:
-            connections.append((r["src"], {"relationship_name": r["rel"]}, r["dst"]))
-        for r in successors:
-            connections.append((r["src"], {"relationship_name": r["rel"]}, r["dst"]))
+        for record in predecessors:
+            neighbour = record.get("neighbour") or {}
+            node = record.get("node") or {}
+            connections.append(
+                (
+                    neighbour if isinstance(neighbour, dict) else dict(neighbour),
+                    {"relationship_name": record.get("rel")},
+                    node if isinstance(node, dict) else dict(node),
+                )
+            )
+        for record in successors:
+            neighbour = record.get("neighbour") or {}
+            node = record.get("node") or {}
+            connections.append(
+                (
+                    node if isinstance(node, dict) else dict(node),
+                    {"relationship_name": record.get("rel")},
+                    neighbour if isinstance(neighbour, dict) else dict(neighbour),
+                )
+            )
         return connections
 
     async def remove_connection_to_predecessors_of(
@@ -1321,7 +1408,7 @@ class ArcadeDBVectorAdapter(ArcadeDBAdapter):
     connection details because the hybrid adapter shares HTTP auth and database
     naming between graph and vector operations.
 
-    Compatible with Cognee >= 1.0.0 (includes get_neighborhood support).
+    Compatible with Cognee 1.5.x.
     """
 
     def __init__(
@@ -1339,11 +1426,13 @@ class ArcadeDBVectorAdapter(ArcadeDBAdapter):
             graph_database_username = graph_config.get("graph_database_username")
             graph_database_password = graph_config.get("graph_database_password")
             graph_database_name = graph_config.get("graph_database_name")
+            graph_database_port = graph_config.get("graph_database_port")
         else:
             graph_database_url = getattr(graph_config, "graph_database_url", None) or url
             graph_database_username = getattr(graph_config, "graph_database_username", None)
             graph_database_password = getattr(graph_config, "graph_database_password", None)
             graph_database_name = getattr(graph_config, "graph_database_name", None)
+            graph_database_port = getattr(graph_config, "graph_database_port", None)
 
         super().__init__(
             graph_database_url=graph_database_url,
@@ -1353,5 +1442,6 @@ class ArcadeDBVectorAdapter(ArcadeDBAdapter):
             url=url,
             api_key=api_key,
             database_name=database_name or graph_database_name or "cognee",
+            graph_database_port=graph_database_port,
             **kwargs,
         )

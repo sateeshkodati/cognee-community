@@ -2,7 +2,7 @@
 
 A community-maintained adapter that enables [Cognee](https://github.com/topoteretes/cognee) to work with [ArcadeDB](https://arcadedb.com/) as a unified hybrid database — both graph and vector operations in a single engine.
 
-Based on [PR#94](https://github.com/topoteretes/cognee-community/pull/94) by [@lvca](https://github.com/lvca) (ArcadeDB team) with additional fixes for Cognee 1.0+ compatibility and production reliability.
+Based on [PR#94](https://github.com/topoteretes/cognee-community/pull/94) by [@lvca](https://github.com/lvca) (ArcadeDB team), updated for **Cognee 1.5.x** and **ArcadeDB 26.8.1**.
 
 ## Installation
 
@@ -109,7 +109,7 @@ ArcadeDB is a multi-model database that natively supports graph traversal, vecto
 ```bash
 docker run -p 2480:2480 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=your-password" \
-  arcadedata/arcadedb:latest
+  arcadedata/arcadedb:26.8.1
 ```
 
 **With Bolt protocol (recommended for better graph performance):**
@@ -118,7 +118,7 @@ docker run -p 2480:2480 \
 docker run -p 2480:2480 -p 7687:7687 \
   -e JAVA_OPTS="-Darcadedb.server.rootPassword=your-password \
     -Darcadedb.server.plugins=Bolt:com.arcadedb.bolt.BoltProtocolPlugin" \
-  arcadedata/arcadedb:latest
+  arcadedata/arcadedb:26.8.1
 ```
 
 ### Configuration Parameters
@@ -165,16 +165,16 @@ This adapter is based on [PR#94](https://github.com/topoteretes/cognee-community
 | Area | Description |
 |------|-------------|
 | **Bug fix** | `index_data_points()` now delegates to `create_data_points()` for proper vector embedding and storage. Without this fix, vectors are never populated on TextSummary/DocumentChunk nodes, making vector search return empty results. |
-| **Cognee 1.0+** | `get_neighborhood()` implementation for the new `GraphDBInterface` API |
-| **Compatibility** | Auto-detection of Cypher type casing (ArcadeDB 26.3 vs 26.4+) |
+| **Cognee 1.5.x** | Graph/vector call shapes match `GraphDBInterface` / `VectorDBInterface` (`add_node` DataPoint-or-id, `add_edge(..., properties=)`, `source_ref_key` / `pipeline_run_id`, `supports_cypher_queries`) |
+| **Compatibility** | Auto-detection of Cypher type casing (ArcadeDB 26.3 vs 26.4+ / 26.8.1) |
 | **Reliability** | Retry with backoff on HTTP 503 `ConcurrentModificationException` |
 | **Database** | Lazy auto-creation with privilege-aware probing (from PR#94 commit `2b0b9f7`) |
 
 ## Requirements
 
 - Python >= 3.11, <= 3.13
-- ArcadeDB >= 26.3 (tested with 26.4.2)
-- Cognee >= 1.0.3
+- ArcadeDB 26.8.1 (26.4+ should work; 26.3 needs lowercase `vertex` auto-detect)
+- Cognee >= 1.5.0, < 1.6.0
 
 ## About ArcadeDB
 
