@@ -3,7 +3,7 @@ Example: Using ArcadeDB as a hybrid (graph + vector) backend for Cognee.
 
 Prerequisites:
   - ArcadeDB 26.8.1 running on localhost:2480
-  - pip install "cognee>=1.5.0,<1.6.0"
+  - pip install "cognee>=1.5.4,<1.6.0"
   - pip install cognee-community-hybrid-adapter-arcadedb
 """
 
@@ -11,6 +11,13 @@ import asyncio
 import os
 import pathlib
 from os import path
+
+# Cognee 1.5.4+ enables multi-user access control by default. A local
+# ArcadeDB example must either disable it or use the ArcadeDB dataset
+# handlers registered by this adapter.
+os.environ.setdefault("ENABLE_BACKEND_ACCESS_CONTROL", "false")
+os.environ.setdefault("GRAPH_DATASET_DATABASE_HANDLER", "arcadedb_graph_local")
+os.environ.setdefault("VECTOR_DATASET_DATABASE_HANDLER", "arcadedb_vector_local")
 
 from cognee import SearchType, add, cognify, config, prune, search
 

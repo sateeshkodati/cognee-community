@@ -2,7 +2,7 @@
 
 A community-maintained adapter that enables [Cognee](https://github.com/topoteretes/cognee) to work with [ArcadeDB](https://arcadedb.com/) as a unified hybrid database — both graph and vector operations in a single engine.
 
-Based on [PR#94](https://github.com/topoteretes/cognee-community/pull/94) by [@lvca](https://github.com/lvca) (ArcadeDB team), updated for **Cognee 1.5.x** and **ArcadeDB 26.8.1**.
+Based on [PR#94](https://github.com/topoteretes/cognee-community/pull/94) by [@lvca](https://github.com/lvca) (ArcadeDB team), updated for **Cognee 1.5.4** and **ArcadeDB 26.8.1**.
 
 ## Installation
 
@@ -20,6 +20,11 @@ import asyncio
 import os
 import pathlib
 from os import path
+
+os.environ.setdefault("ENABLE_BACKEND_ACCESS_CONTROL", "false")
+os.environ.setdefault("GRAPH_DATASET_DATABASE_HANDLER", "arcadedb_graph_local")
+os.environ.setdefault("VECTOR_DATASET_DATABASE_HANDLER", "arcadedb_vector_local")
+
 from cognee import config, prune, add, cognify, search, SearchType
 
 # Import the register module to enable ArcadeDB support
@@ -96,6 +101,7 @@ export ARCADEDB_URL="localhost"
 export ARCADEDB_HTTP_PORT="2480"
 export ARCADEDB_USERNAME="root"
 export ARCADEDB_PASSWORD="your-password"
+export ENABLE_BACKEND_ACCESS_CONTROL="false"
 export GRAPH_DATASET_DATABASE_HANDLER="arcadedb_graph_local"
 export VECTOR_DATASET_DATABASE_HANDLER="arcadedb_vector_local"
 ```
@@ -174,7 +180,7 @@ This adapter is based on [PR#94](https://github.com/topoteretes/cognee-community
 
 - Python >= 3.11, <= 3.13
 - ArcadeDB 26.8.1 (26.4+ should work; 26.3 needs lowercase `vertex` auto-detect)
-- Cognee >= 1.5.0, < 1.6.0
+- Cognee >= 1.5.4, < 1.6.0 ([v1.5.4](https://github.com/topoteretes/cognee/releases/tag/v1.5.4))
 
 ## About ArcadeDB
 

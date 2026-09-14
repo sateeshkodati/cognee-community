@@ -62,6 +62,9 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
 
     # Cognee 1.5.x CYPHER / NATURAL_LANGUAGE retrievers inspect this flag.
     supports_cypher_queries: bool = True
+    # Cognee 1.5.4+ checks this before payload-only vector updates; ArcadeDB
+    # rewrites embeddings through create_data_points instead.
+    supports_payload_update: bool = False
 
     def __init__(
         self,
@@ -469,7 +472,10 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
 
         Cognee 1.5.x GraphDBInterface uses both call styles.
         """
-        if isinstance(node, DataPoint):
+        # Cognee 1.5.4 `get_graph_from_model` can emit `copy_model` snapshots
+        # that are pydantic models with `id`/`model_dump` but are not
+        # `isinstance(..., DataPoint)`.
+        if hasattr(node, "model_dump") and hasattr(node, "id"):
             serialized = self.serialize_properties(node.model_dump())
             node_id = str(node.id)
             await self._upsert_cypher_node(node_id, serialized)
@@ -483,7 +489,7 @@ class ArcadeDBAdapter(VectorDBInterface, GraphDBInterface):
             )
             return
 
-        if properties is None:
+        if not isinstance(node, str) or properties is None:
             raise ValueError("properties is required when node is a string id")
 
         serialized = self.serialize_properties(properties)
@@ -1410,7 +1416,7 @@ class ArcadeDBVectorAdapter(ArcadeDBAdapter):
     connection details because the hybrid adapter shares HTTP auth and database
     naming between graph and vector operations.
 
-    Compatible with Cognee 1.5.x.
+    Compatible with Cognee 1.5.4+.
     """
 
     def __init__(

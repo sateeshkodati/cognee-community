@@ -1,4 +1,4 @@
-"""Offline cognee-1.5.x conformance tests. No ArcadeDB server, no secrets."""
+"""Offline cognee-1.5.4 conformance tests. No ArcadeDB server, no secrets."""
 
 import inspect
 
@@ -45,6 +45,7 @@ def test_cognee_15_graph_call_shapes():
     _bind("has_edge", source_id="a", target_id="b", relationship_name="is_a")
     _bind("remove_belongs_to_set_tags", tags=["set-a"], node_ids=["node-id"])
     assert ArcadeDBAdapter.supports_cypher_queries is True
+    assert ArcadeDBAdapter.supports_payload_update is False
 
 
 def test_graph_database_port_2480_is_http():
